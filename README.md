@@ -49,6 +49,8 @@ Behavior for completed-task archiving:
 - If the target `*-completed-tasks.md` file already exists, new completed tasks are appended instead of creating a duplicate file.
 - Archive filenames include a configurable suffix (default: `dd.mm.yyyy`).
 - Date suffix auto-skips when the base filename already contains today's date to avoid duplicate dates.
+- Task archive commands remember the selected template and no longer re-prompt when the target archive file already exists.
+- Task archive commands include legacy duplicate cleanup by migrating/removing old same-name archive files from the source folder.
 
 ## Template Placeholders
 
@@ -86,6 +88,7 @@ Example template:
 - **Archive folder**: where generated archive notes are created.
 - **Archive file name pattern**: supports `{{date}}`, `{{datetime}}`, `{{title}}`.
 - **Archive suffix pattern**: date/time suffix appended to archive filename (tokens: `dd`, `mm`, `yyyy`, `HH`, `MM`, `ss`; leave empty to disable).
+- **Task archive template path**: remembered template used by task archive commands after first selection.
 - **Include original content**: controls `{{content}}` replacement.
 - **Processed source folder**: target folder used by archive+move command.
 - **Processed tag**: tag added by archive+move command.

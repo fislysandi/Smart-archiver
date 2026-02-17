@@ -15,6 +15,7 @@ interface SmartArchiverSettings {
   archiveFolder: string;
   archiveFileNamePattern: string;
   archiveSuffixPattern: string;
+  taskArchiveTemplatePath: string;
   includeOriginalContent: boolean;
   processedSourceFolder: string;
   processedTag: string;
@@ -25,6 +26,7 @@ const DEFAULT_SETTINGS: SmartArchiverSettings = {
   archiveFolder: "Archive",
   archiveFileNamePattern: "{{date}} - {{title}}",
   archiveSuffixPattern: "dd.mm.yyyy",
+  taskArchiveTemplatePath: "",
   includeOriginalContent: true,
   processedSourceFolder: "Archive/Processed",
   processedTag: "archived"
@@ -221,6 +223,29 @@ export default class SmartArchiverPlugin extends Plugin {
       return;
     }
 
+    const archiveFolder = normalizePath(this.settings.archiveFolder);
+    await this.ensureFolderExists(archiveFolder);
+
+    const baseFileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
+    const archivePath = this.buildArchivePath(`${baseFileName} - ${state}-tasks`, archiveFolder);
+
+    await this.cleanupLegacyTaskArchive(sourceFile, archivePath);
+
+    const existing = this.app.vault.getAbstractFileByPath(archivePath);
+    if (existing instanceof TFile) {
+      await this.appendTaskItems(existing, extraction.matchedTasks);
+      await this.setArchiveTime(existing);
+      await this.app.vault.modify(sourceFile, extraction.remainingContent);
+      new Notice(`Archived ${extraction.matchedTasks.length} ${state} task(s): ${existing.path} | Removed from source.`);
+      return;
+    }
+
+    const preferredTemplate = await this.readPreferredTaskTemplate();
+    if (preferredTemplate) {
+      await this.createTaskArchive(sourceFile, extraction, preferredTemplate, state, archivePath);
+      return;
+    }
+
     const templates = await this.readTemplates();
     if (templates.length === 0) {
       new Notice("No templates found in the configured template folder.");
@@ -228,7 +253,9 @@ export default class SmartArchiverPlugin extends Plugin {
     }
 
     const modal = new TemplateSuggestModal(this.app, templates, async (template) => {
-      await this.createTaskArchive(sourceFile, extraction, template, state);
+      this.settings.taskArchiveTemplatePath = template.file.path;
+      await this.saveSettings();
+      await this.createTaskArchive(sourceFile, extraction, template, state, archivePath);
     });
     modal.open();
   }
@@ -237,7 +264,8 @@ export default class SmartArchiverPlugin extends Plugin {
     sourceFile: TFile,
     extraction: TaskExtraction,
     template: ArchiveTemplate,
-    state: TaskState
+    state: TaskState,
+    archivePath: string
   ): Promise<void> {
     const frontmatter = extractFrontmatterFields(this.app, sourceFile);
     const taskItemsContent = extraction.matchedTasks.join("\n");
@@ -253,28 +281,72 @@ export default class SmartArchiverPlugin extends Plugin {
     };
 
     const archiveContent = renderTemplate(template.content, renderContext);
-    const archiveFolder = normalizePath(this.settings.archiveFolder);
-    await this.ensureFolderExists(archiveFolder);
-
-    const baseFileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
-    const archivePath = this.buildArchivePath(`${baseFileName} - ${state}-tasks`, archiveFolder);
     const existing = this.app.vault.getAbstractFileByPath(archivePath);
-
-    let archiveFile: TFile;
-    if (existing instanceof TFile) {
-      await this.appendTaskItems(existing, extraction.matchedTasks);
-      archiveFile = existing;
-    } else if (existing) {
+    if (existing && !(existing instanceof TFile)) {
       new Notice(`Cannot archive tasks: path exists and is not a file (${archivePath}).`);
       return;
-    } else {
-      archiveFile = await this.app.vault.create(archivePath, archiveContent);
     }
+
+    const archiveFile = existing instanceof TFile ? existing : await this.app.vault.create(archivePath, archiveContent);
 
     await this.setArchiveTime(archiveFile);
     await this.app.vault.modify(sourceFile, extraction.remainingContent);
 
     new Notice(`Archived ${extraction.matchedTasks.length} ${state} task(s): ${archiveFile.path} | Removed from source.`);
+  }
+
+  private async readPreferredTaskTemplate(): Promise<ArchiveTemplate | null> {
+    const path = this.settings.taskArchiveTemplatePath.trim();
+    if (!path) {
+      return null;
+    }
+
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile) || file.extension !== "md") {
+      this.settings.taskArchiveTemplatePath = "";
+      await this.saveSettings();
+      return null;
+    }
+
+    const content = await this.app.vault.read(file);
+    return { file, content };
+  }
+
+  private async cleanupLegacyTaskArchive(sourceFile: TFile, archivePath: string): Promise<void> {
+    const parentPath = sourceFile.parent?.path;
+    if (!parentPath) {
+      return;
+    }
+
+    const fileName = archivePath.split("/").pop();
+    if (!fileName) {
+      return;
+    }
+
+    const legacyPath = normalizePath(`${parentPath}/${fileName}`);
+    if (legacyPath === archivePath || legacyPath === sourceFile.path) {
+      return;
+    }
+
+    const legacyFile = this.app.vault.getAbstractFileByPath(legacyPath);
+    if (!(legacyFile instanceof TFile)) {
+      return;
+    }
+
+    const target = this.app.vault.getAbstractFileByPath(archivePath);
+    if (target instanceof TFile) {
+      const legacyContent = await this.app.vault.read(legacyFile);
+      const targetContent = await this.app.vault.read(target);
+      if (legacyContent !== targetContent) {
+        const separator = targetContent.endsWith("\n") ? "" : "\n";
+        const migrationBlock = `## Migrated Legacy Archive (${new Date().toISOString()})\n\n${legacyContent}`;
+        await this.app.vault.modify(target, `${targetContent}${separator}\n${migrationBlock}`);
+      }
+      await this.app.vault.trash(legacyFile, false);
+      return;
+    }
+
+    await this.app.fileManager.renameFile(legacyFile, archivePath);
   }
 
   private async appendTaskItems(file: TFile, taskItems: string[]): Promise<void> {
@@ -413,6 +485,20 @@ class SmartArchiverSettingsTab extends PluginSettingTab {
           .setValue(this.plugin.settings.archiveSuffixPattern)
           .onChange(async (value) => {
             this.plugin.settings.archiveSuffixPattern = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Task archive template path")
+      .setDesc("Remembered template for task archive commands. Auto-selected after first use.")
+      .addText((text) =>
+        text
+          .setPlaceholder("Templates/Archive/archive-completed-tasks.md")
+          .setValue(this.plugin.settings.taskArchiveTemplatePath)
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            this.plugin.settings.taskArchiveTemplatePath = trimmed ? normalizePath(trimmed) : "";
             await this.plugin.saveSettings();
           })
       );
