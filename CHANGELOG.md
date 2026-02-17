@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.3] - 2026-02-17
+
+### Added
+- New commands to archive incomplete (`[ ]`) and cancelled (`[-]`) tasks from the active note.
+- Generic task placeholders for task-archive templates: `{{task_items}}` and `{{task_count}}`.
+
+### Changed
+- Archive filename suffix is now configurable in plugin settings.
+- Task-archive commands now append to existing archive files and always clear matched tasks from the source note.
+
 ## [0.2.2] - 2026-02-17
 
 ### Fixed

@@ -1,7 +1,7 @@
 {
   "id": "smart-archiver",
   "name": "Smart Archiver",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "minAppVersion": "1.5.0",
   "description": "Archive GTD and project notes into template-driven archive files.",
   "author": "fislysandi",
