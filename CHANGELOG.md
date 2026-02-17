@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.4] - 2026-02-17
+
+### Fixed
+- Prevented duplicate date segments in archive filenames by auto-skipping suffix when the base name already contains today's date.
+
 ## [0.2.3] - 2026-02-17
 
 ### Added
