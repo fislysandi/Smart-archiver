@@ -3,6 +3,10 @@
 - Archived at: {{datetime}}
 - Source: {{link}}
 - Source path: `{{path}}`
+- Project: {{project}}
+- Status: {{status}}
+- Due: {{due}}
+- Tags: {{tags}}
 
 ## Summary
 

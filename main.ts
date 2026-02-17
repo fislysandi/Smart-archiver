@@ -1,6 +1,7 @@
 import {
   App,
   FuzzySuggestModal,
+  getAllTags,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -14,13 +15,17 @@ interface SmartArchiverSettings {
   archiveFolder: string;
   archiveFileNamePattern: string;
   includeOriginalContent: boolean;
+  processedSourceFolder: string;
+  processedTag: string;
 }
 
 const DEFAULT_SETTINGS: SmartArchiverSettings = {
   templateFolder: "Templates/Archive",
   archiveFolder: "Archive",
   archiveFileNamePattern: "{{date}} - {{title}}",
-  includeOriginalContent: true
+  includeOriginalContent: true,
+  processedSourceFolder: "Archive/Processed",
+  processedTag: "archived"
 };
 
 type ArchiveTemplate = {
@@ -32,6 +37,14 @@ type RenderContext = {
   sourceFile: TFile;
   sourceContent: string;
   includeOriginalContent: boolean;
+  frontmatter: FrontmatterFields;
+};
+
+type FrontmatterFields = {
+  project: string;
+  status: string;
+  due: string;
+  tags: string;
 };
 
 class TemplateSuggestModal extends FuzzySuggestModal<ArchiveTemplate> {
@@ -72,6 +85,14 @@ export default class SmartArchiverPlugin extends Plugin {
       }
     });
 
+    this.addCommand({
+      id: "archive-move-and-tag-active-note",
+      name: "Archive active note, then tag and move source",
+      callback: () => {
+        void this.archiveActiveNote({ moveAndTagSource: true });
+      }
+    });
+
     this.addSettingTab(new SmartArchiverSettingsTab(this.app, this));
   }
 
@@ -84,7 +105,7 @@ export default class SmartArchiverPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private async archiveActiveNote(): Promise<void> {
+  private async archiveActiveNote(options?: { moveAndTagSource: boolean }): Promise<void> {
     const sourceFile = this.app.workspace.getActiveFile();
     if (!sourceFile) {
       new Notice("No active note to archive.");
@@ -98,7 +119,7 @@ export default class SmartArchiverPlugin extends Plugin {
     }
 
     const modal = new TemplateSuggestModal(this.app, templates, async (template) => {
-      await this.createArchiveFromTemplate(sourceFile, template);
+      await this.createArchiveFromTemplate(sourceFile, template, Boolean(options?.moveAndTagSource));
     });
     modal.open();
   }
@@ -117,12 +138,18 @@ export default class SmartArchiverPlugin extends Plugin {
     return result;
   }
 
-  private async createArchiveFromTemplate(sourceFile: TFile, template: ArchiveTemplate): Promise<void> {
+  private async createArchiveFromTemplate(
+    sourceFile: TFile,
+    template: ArchiveTemplate,
+    moveAndTagSource: boolean
+  ): Promise<void> {
     const sourceContent = await this.app.vault.read(sourceFile);
+    const frontmatter = extractFrontmatterFields(this.app, sourceFile);
     const renderContext: RenderContext = {
       sourceFile,
       sourceContent,
-      includeOriginalContent: this.settings.includeOriginalContent
+      includeOriginalContent: this.settings.includeOriginalContent,
+      frontmatter
     };
 
     const archiveContent = renderTemplate(template.content, renderContext);
@@ -133,12 +160,53 @@ export default class SmartArchiverPlugin extends Plugin {
     const archivePath = await this.nextAvailablePath(`${archiveFolder}/${fileName}.md`);
     const created = await this.app.vault.create(archivePath, archiveContent);
 
+    if (moveAndTagSource) {
+      await this.applyArchivedTag(sourceFile);
+      const movedPath = await this.moveSourceNote(sourceFile);
+      new Notice(`Archived: ${created.path} | Source moved: ${movedPath}`);
+      return;
+    }
+
     new Notice(`Archived: ${created.path}`);
   }
 
+  private async moveSourceNote(sourceFile: TFile): Promise<string> {
+    const targetFolder = normalizePath(this.settings.processedSourceFolder);
+    await this.ensureFolderExists(targetFolder);
+
+    const targetPath = await this.nextAvailablePath(`${targetFolder}/${sourceFile.basename}.md`);
+    await this.app.fileManager.renameFile(sourceFile, targetPath);
+    return targetPath;
+  }
+
+  private async applyArchivedTag(sourceFile: TFile): Promise<void> {
+    const normalizedTag = normalizeTag(this.settings.processedTag);
+    if (!normalizedTag) {
+      return;
+    }
+
+    await this.app.fileManager.processFrontMatter(sourceFile, (frontmatter) => {
+      const tags = coerceTags(frontmatter.tags);
+      if (!tags.includes(normalizedTag)) {
+        frontmatter.tags = [...tags, normalizedTag];
+      }
+    });
+  }
+
   private async ensureFolderExists(path: string): Promise<void> {
-    if (!this.app.vault.getFolderByPath(path)) {
-      await this.app.vault.createFolder(path);
+    const normalized = normalizePath(path);
+    if (normalized === "." || this.app.vault.getFolderByPath(normalized)) {
+      return;
+    }
+
+    const segments = normalized.split("/");
+    let currentPath = "";
+
+    for (const segment of segments) {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      if (!this.app.vault.getFolderByPath(currentPath)) {
+        await this.app.vault.createFolder(currentPath);
+      }
     }
   }
 
@@ -216,6 +284,33 @@ class SmartArchiverSettingsTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    new Setting(containerEl)
+      .setName("Processed source folder")
+      .setDesc("Destination used by archive+move command for the original source note.")
+      .addText((text) =>
+        text
+          .setPlaceholder("Archive/Processed")
+          .setValue(this.plugin.settings.processedSourceFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.processedSourceFolder =
+              normalizePath(value.trim() || DEFAULT_SETTINGS.processedSourceFolder);
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Processed tag")
+      .setDesc("Tag applied by archive+move command (without #).")
+      .addText((text) =>
+        text
+          .setPlaceholder("archived")
+          .setValue(this.plugin.settings.processedTag)
+          .onChange(async (value) => {
+            this.plugin.settings.processedTag = value.trim() || DEFAULT_SETTINGS.processedTag;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }
 
@@ -230,7 +325,11 @@ function renderTemplate(templateText: string, context: RenderContext): string {
     "{{title}}": context.sourceFile.basename,
     "{{path}}": context.sourceFile.path,
     "{{link}}": `[[${context.sourceFile.path}|${context.sourceFile.basename}]]`,
-    "{{content}}": context.includeOriginalContent ? context.sourceContent : ""
+    "{{content}}": context.includeOriginalContent ? context.sourceContent : "",
+    "{{project}}": context.frontmatter.project,
+    "{{status}}": context.frontmatter.status,
+    "{{due}}": context.frontmatter.due,
+    "{{tags}}": context.frontmatter.tags
   };
 
   return Object.entries(replacements).reduce((output, [key, value]) => {
@@ -258,4 +357,60 @@ function sanitizeFileName(value: string): string {
     .replace(/[<>:"/\\|?*]/g, "-")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractFrontmatterFields(app: App, sourceFile: TFile): FrontmatterFields {
+  const cache = app.metadataCache.getFileCache(sourceFile);
+  const frontmatter = cache?.frontmatter;
+  if (!frontmatter) {
+    return { project: "", status: "", due: "", tags: "" };
+  }
+
+  const project = coerceString(frontmatter.project);
+  const status = coerceString(frontmatter.status);
+  const due = coerceString(frontmatter.due);
+  const frontmatterTags = coerceTags(frontmatter.tags);
+  const inlineTagValues = getAllTags(cache ?? {}) ?? [];
+  const inlineTags = inlineTagValues.map((tag) => tag.replace(/^#/, ""));
+  const tags = Array.from(new Set([...frontmatterTags, ...inlineTags])).join(", ");
+
+  return {
+    project,
+    status,
+    due,
+    tags
+  };
+}
+
+function coerceString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return "";
+}
+
+function coerceTags(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeTag(coerceString(item)))
+      .filter((item): item is string => Boolean(item));
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => normalizeTag(item))
+      .filter((item): item is string => Boolean(item));
+  }
+  return [];
+}
+
+function normalizeTag(tag: string): string {
+  const trimmed = tag.trim().replace(/^#/, "");
+  return trimmed;
 }
