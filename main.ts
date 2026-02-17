@@ -173,6 +173,7 @@ export default class SmartArchiverPlugin extends Plugin {
     const fileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
     const archivePath = await this.nextAvailablePath(`${archiveFolder}/${fileName}.md`);
     const created = await this.app.vault.create(archivePath, archiveContent);
+    await this.setArchiveTime(created);
 
     if (moveAndTagSource) {
       await this.applyArchivedTag(sourceFile);
@@ -217,12 +218,13 @@ export default class SmartArchiverPlugin extends Plugin {
     template: ArchiveTemplate
   ): Promise<void> {
     const frontmatter = extractFrontmatterFields(this.app, sourceFile);
+    const completedTasksContent = extraction.completedTasks.join("\n");
     const renderContext: RenderContext = {
       sourceFile,
-      sourceContent,
-      includeOriginalContent: this.settings.includeOriginalContent,
+      sourceContent: completedTasksContent,
+      includeOriginalContent: true,
       frontmatter,
-      completedTasks: extraction.completedTasks.join("\n"),
+      completedTasks: completedTasksContent,
       completedTasksCount: String(extraction.completedTasks.length)
     };
 
@@ -233,6 +235,7 @@ export default class SmartArchiverPlugin extends Plugin {
     const baseFileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
     const archivePath = await this.nextAvailablePath(`${archiveFolder}/${baseFileName} - completed-tasks.md`);
     const created = await this.app.vault.create(archivePath, archiveContent);
+    await this.setArchiveTime(created);
 
     if (this.settings.removeCompletedTasksAfterArchiving) {
       await this.app.vault.modify(sourceFile, extraction.remainingContent);
@@ -241,6 +244,13 @@ export default class SmartArchiverPlugin extends Plugin {
     }
 
     new Notice(`Archived ${extraction.completedTasks.length} task(s): ${created.path}`);
+  }
+
+  private async setArchiveTime(file: TFile): Promise<void> {
+    const archiveTime = new Date().toISOString();
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      frontmatter["archive-time"] = archiveTime;
+    });
   }
 
   private async moveSourceNote(sourceFile: TFile): Promise<string> {

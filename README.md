@@ -86,6 +86,12 @@ Example template:
 
 Releases include `main.js`, `manifest.json`, and `styles.css` assets.
 
+## Archive Metadata
+
+On every archive file creation, Smart Archiver sets/updates frontmatter property:
+
+- `archive-time`: ISO datetime of archive creation
+
 ## Development
 
 ```bash
