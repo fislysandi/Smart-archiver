@@ -17,7 +17,6 @@ interface SmartArchiverSettings {
   includeOriginalContent: boolean;
   processedSourceFolder: string;
   processedTag: string;
-  removeCompletedTasksAfterArchiving: boolean;
 }
 
 const DEFAULT_SETTINGS: SmartArchiverSettings = {
@@ -26,8 +25,7 @@ const DEFAULT_SETTINGS: SmartArchiverSettings = {
   archiveFileNamePattern: "{{date}} - {{title}}",
   includeOriginalContent: true,
   processedSourceFolder: "Archive/Processed",
-  processedTag: "archived",
-  removeCompletedTasksAfterArchiving: false
+  processedTag: "archived"
 };
 
 type ArchiveTemplate = {
@@ -233,17 +231,31 @@ export default class SmartArchiverPlugin extends Plugin {
     await this.ensureFolderExists(archiveFolder);
 
     const baseFileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
-    const archivePath = await this.nextAvailablePath(`${archiveFolder}/${baseFileName} - completed-tasks.md`);
-    const created = await this.app.vault.create(archivePath, archiveContent);
-    await this.setArchiveTime(created);
+    const archivePath = normalizePath(`${archiveFolder}/${baseFileName} - completed-tasks.md`);
+    const existing = this.app.vault.getAbstractFileByPath(archivePath);
 
-    if (this.settings.removeCompletedTasksAfterArchiving) {
-      await this.app.vault.modify(sourceFile, extraction.remainingContent);
-      new Notice(`Archived ${extraction.completedTasks.length} task(s): ${created.path} | Removed from source.`);
+    let archiveFile: TFile;
+    if (existing instanceof TFile) {
+      await this.appendCompletedTasks(existing, extraction.completedTasks);
+      archiveFile = existing;
+    } else if (existing) {
+      new Notice(`Cannot archive tasks: path exists and is not a file (${archivePath}).`);
       return;
+    } else {
+      archiveFile = await this.app.vault.create(archivePath, archiveContent);
     }
 
-    new Notice(`Archived ${extraction.completedTasks.length} task(s): ${created.path}`);
+    await this.setArchiveTime(archiveFile);
+    await this.app.vault.modify(sourceFile, extraction.remainingContent);
+
+    new Notice(`Archived ${extraction.completedTasks.length} task(s): ${archiveFile.path} | Removed from source.`);
+  }
+
+  private async appendCompletedTasks(file: TFile, completedTasks: string[]): Promise<void> {
+    const existingContent = await this.app.vault.read(file);
+    const separator = existingContent.endsWith("\n") ? "" : "\n";
+    const appended = buildCompletedTaskAppendBlock(completedTasks);
+    await this.app.vault.modify(file, `${existingContent}${separator}\n${appended}`);
   }
 
   private async setArchiveTime(file: TFile): Promise<void> {
@@ -395,15 +407,6 @@ class SmartArchiverSettingsTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
-      .setName("Remove completed tasks after archiving")
-      .setDesc("When enabled, archived [x] tasks are removed from the source note.")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.removeCompletedTasksAfterArchiving).onChange(async (value) => {
-          this.plugin.settings.removeCompletedTasksAfterArchiving = value;
-          await this.plugin.saveSettings();
-        })
-      );
   }
 }
 
@@ -536,4 +539,9 @@ function extractCompletedTasks(content: string): CompletedTaskExtraction {
 
 function isCompletedTaskLine(line: string): boolean {
   return /^\s*[-*]\s+\[[xX]\]\s+/.test(line);
+}
+
+function buildCompletedTaskAppendBlock(completedTasks: string[]): string {
+  const timestamp = new Date().toISOString();
+  return `## Appended Tasks (${timestamp})\n\n${completedTasks.join("\n")}`;
 }

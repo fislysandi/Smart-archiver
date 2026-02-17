@@ -39,6 +39,11 @@ To archive only completed tasks from the active note, run:
 
 - **Archive completed tasks from active note**
 
+Behavior for completed-task archiving:
+
+- Archived `[x]` tasks are removed from the source note after a successful archive write.
+- If the target `*-completed-tasks.md` file already exists, new completed tasks are appended instead of creating a duplicate file.
+
 ## Template Placeholders
 
 - `{{date}}` - ISO date (`YYYY-MM-DD`)
@@ -75,7 +80,6 @@ Example template:
 - **Include original content**: controls `{{content}}` replacement.
 - **Processed source folder**: target folder used by archive+move command.
 - **Processed tag**: tag added by archive+move command.
-- **Remove completed tasks after archiving**: if enabled, `[x]` tasks are removed from source note after successful archive creation.
 
 ## BRAT Testing
 
