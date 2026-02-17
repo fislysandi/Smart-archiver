@@ -17,6 +17,7 @@ interface SmartArchiverSettings {
   includeOriginalContent: boolean;
   processedSourceFolder: string;
   processedTag: string;
+  removeCompletedTasksAfterArchiving: boolean;
 }
 
 const DEFAULT_SETTINGS: SmartArchiverSettings = {
@@ -25,7 +26,8 @@ const DEFAULT_SETTINGS: SmartArchiverSettings = {
   archiveFileNamePattern: "{{date}} - {{title}}",
   includeOriginalContent: true,
   processedSourceFolder: "Archive/Processed",
-  processedTag: "archived"
+  processedTag: "archived",
+  removeCompletedTasksAfterArchiving: false
 };
 
 type ArchiveTemplate = {
@@ -38,6 +40,8 @@ type RenderContext = {
   sourceContent: string;
   includeOriginalContent: boolean;
   frontmatter: FrontmatterFields;
+  completedTasks: string;
+  completedTasksCount: string;
 };
 
 type FrontmatterFields = {
@@ -90,6 +94,14 @@ export default class SmartArchiverPlugin extends Plugin {
       name: "Archive active note, then tag and move source",
       callback: () => {
         void this.archiveActiveNote({ moveAndTagSource: true });
+      }
+    });
+
+    this.addCommand({
+      id: "archive-completed-tasks-from-active-note",
+      name: "Archive completed tasks from active note",
+      callback: () => {
+        void this.archiveCompletedTasksFromActiveNote();
       }
     });
 
@@ -149,7 +161,9 @@ export default class SmartArchiverPlugin extends Plugin {
       sourceFile,
       sourceContent,
       includeOriginalContent: this.settings.includeOriginalContent,
-      frontmatter
+      frontmatter,
+      completedTasks: "",
+      completedTasksCount: "0"
     };
 
     const archiveContent = renderTemplate(template.content, renderContext);
@@ -168,6 +182,65 @@ export default class SmartArchiverPlugin extends Plugin {
     }
 
     new Notice(`Archived: ${created.path}`);
+  }
+
+  private async archiveCompletedTasksFromActiveNote(): Promise<void> {
+    const sourceFile = this.app.workspace.getActiveFile();
+    if (!sourceFile) {
+      new Notice("No active note to archive tasks from.");
+      return;
+    }
+
+    const sourceContent = await this.app.vault.read(sourceFile);
+    const extraction = extractCompletedTasks(sourceContent);
+    if (extraction.completedTasks.length === 0) {
+      new Notice("No completed tasks ([x]) found in the active note.");
+      return;
+    }
+
+    const templates = await this.readTemplates();
+    if (templates.length === 0) {
+      new Notice("No templates found in the configured template folder.");
+      return;
+    }
+
+    const modal = new TemplateSuggestModal(this.app, templates, async (template) => {
+      await this.createCompletedTasksArchive(sourceFile, sourceContent, extraction, template);
+    });
+    modal.open();
+  }
+
+  private async createCompletedTasksArchive(
+    sourceFile: TFile,
+    sourceContent: string,
+    extraction: CompletedTaskExtraction,
+    template: ArchiveTemplate
+  ): Promise<void> {
+    const frontmatter = extractFrontmatterFields(this.app, sourceFile);
+    const renderContext: RenderContext = {
+      sourceFile,
+      sourceContent,
+      includeOriginalContent: this.settings.includeOriginalContent,
+      frontmatter,
+      completedTasks: extraction.completedTasks.join("\n"),
+      completedTasksCount: String(extraction.completedTasks.length)
+    };
+
+    const archiveContent = renderTemplate(template.content, renderContext);
+    const archiveFolder = normalizePath(this.settings.archiveFolder);
+    await this.ensureFolderExists(archiveFolder);
+
+    const baseFileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
+    const archivePath = await this.nextAvailablePath(`${archiveFolder}/${baseFileName} - completed-tasks.md`);
+    const created = await this.app.vault.create(archivePath, archiveContent);
+
+    if (this.settings.removeCompletedTasksAfterArchiving) {
+      await this.app.vault.modify(sourceFile, extraction.remainingContent);
+      new Notice(`Archived ${extraction.completedTasks.length} task(s): ${created.path} | Removed from source.`);
+      return;
+    }
+
+    new Notice(`Archived ${extraction.completedTasks.length} task(s): ${created.path}`);
   }
 
   private async moveSourceNote(sourceFile: TFile): Promise<string> {
@@ -311,6 +384,16 @@ class SmartArchiverSettingsTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("Remove completed tasks after archiving")
+      .setDesc("When enabled, archived [x] tasks are removed from the source note.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.removeCompletedTasksAfterArchiving).onChange(async (value) => {
+          this.plugin.settings.removeCompletedTasksAfterArchiving = value;
+          await this.plugin.saveSettings();
+        })
+      );
   }
 }
 
@@ -329,7 +412,9 @@ function renderTemplate(templateText: string, context: RenderContext): string {
     "{{project}}": context.frontmatter.project,
     "{{status}}": context.frontmatter.status,
     "{{due}}": context.frontmatter.due,
-    "{{tags}}": context.frontmatter.tags
+    "{{tags}}": context.frontmatter.tags,
+    "{{completed_tasks}}": context.completedTasks,
+    "{{completed_tasks_count}}": context.completedTasksCount
   };
 
   return Object.entries(replacements).reduce((output, [key, value]) => {
@@ -413,4 +498,32 @@ function coerceTags(value: unknown): string[] {
 function normalizeTag(tag: string): string {
   const trimmed = tag.trim().replace(/^#/, "");
   return trimmed;
+}
+
+type CompletedTaskExtraction = {
+  completedTasks: string[];
+  remainingContent: string;
+};
+
+function extractCompletedTasks(content: string): CompletedTaskExtraction {
+  const lines = content.split("\n");
+  const completedTasks: string[] = [];
+  const remainingLines: string[] = [];
+
+  for (const line of lines) {
+    if (isCompletedTaskLine(line)) {
+      completedTasks.push(line);
+      continue;
+    }
+    remainingLines.push(line);
+  }
+
+  return {
+    completedTasks,
+    remainingContent: remainingLines.join("\n")
+  };
+}
+
+function isCompletedTaskLine(line: string): boolean {
+  return /^\s*[-*]\s+\[[xX]\]\s+/.test(line);
 }
