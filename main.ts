@@ -40,9 +40,13 @@ type RenderContext = {
   sourceContent: string;
   includeOriginalContent: boolean;
   frontmatter: FrontmatterFields;
+  taskItems: string;
+  taskCount: string;
   completedTasks: string;
   completedTasksCount: string;
 };
+
+type TaskState = "completed" | "incomplete" | "cancelled";
 
 type FrontmatterFields = {
   project: string;
@@ -101,7 +105,23 @@ export default class SmartArchiverPlugin extends Plugin {
       id: "archive-completed-tasks-from-active-note",
       name: "Archive completed tasks from active note",
       callback: () => {
-        void this.archiveCompletedTasksFromActiveNote();
+        void this.archiveTasksFromActiveNote("completed");
+      }
+    });
+
+    this.addCommand({
+      id: "archive-incomplete-tasks-from-active-note",
+      name: "Archive incomplete tasks from active note",
+      callback: () => {
+        void this.archiveTasksFromActiveNote("incomplete");
+      }
+    });
+
+    this.addCommand({
+      id: "archive-cancelled-tasks-from-active-note",
+      name: "Archive cancelled tasks from active note",
+      callback: () => {
+        void this.archiveTasksFromActiveNote("cancelled");
       }
     });
 
@@ -162,6 +182,8 @@ export default class SmartArchiverPlugin extends Plugin {
       sourceContent,
       includeOriginalContent: this.settings.includeOriginalContent,
       frontmatter,
+      taskItems: "",
+      taskCount: "0",
       completedTasks: "",
       completedTasksCount: "0"
     };
@@ -185,7 +207,7 @@ export default class SmartArchiverPlugin extends Plugin {
     new Notice(`Archived: ${created.path}`);
   }
 
-  private async archiveCompletedTasksFromActiveNote(): Promise<void> {
+  private async archiveTasksFromActiveNote(state: TaskState): Promise<void> {
     const sourceFile = this.app.workspace.getActiveFile();
     if (!sourceFile) {
       new Notice("No active note to archive tasks from.");
@@ -193,9 +215,9 @@ export default class SmartArchiverPlugin extends Plugin {
     }
 
     const sourceContent = await this.app.vault.read(sourceFile);
-    const extraction = extractCompletedTasks(sourceContent);
-    if (extraction.completedTasks.length === 0) {
-      new Notice("No completed tasks ([x]) found in the active note.");
+    const extraction = extractTasksByState(sourceContent, state);
+    if (extraction.matchedTasks.length === 0) {
+      new Notice(`No ${state} tasks found in the active note.`);
       return;
     }
 
@@ -206,26 +228,28 @@ export default class SmartArchiverPlugin extends Plugin {
     }
 
     const modal = new TemplateSuggestModal(this.app, templates, async (template) => {
-      await this.createCompletedTasksArchive(sourceFile, sourceContent, extraction, template);
+      await this.createTaskArchive(sourceFile, extraction, template, state);
     });
     modal.open();
   }
 
-  private async createCompletedTasksArchive(
+  private async createTaskArchive(
     sourceFile: TFile,
-    sourceContent: string,
-    extraction: CompletedTaskExtraction,
-    template: ArchiveTemplate
+    extraction: TaskExtraction,
+    template: ArchiveTemplate,
+    state: TaskState
   ): Promise<void> {
     const frontmatter = extractFrontmatterFields(this.app, sourceFile);
-    const completedTasksContent = extraction.completedTasks.join("\n");
+    const taskItemsContent = extraction.matchedTasks.join("\n");
     const renderContext: RenderContext = {
       sourceFile,
-      sourceContent: completedTasksContent,
+      sourceContent: taskItemsContent,
       includeOriginalContent: true,
       frontmatter,
-      completedTasks: completedTasksContent,
-      completedTasksCount: String(extraction.completedTasks.length)
+      taskItems: taskItemsContent,
+      taskCount: String(extraction.matchedTasks.length),
+      completedTasks: taskItemsContent,
+      completedTasksCount: String(extraction.matchedTasks.length)
     };
 
     const archiveContent = renderTemplate(template.content, renderContext);
@@ -233,12 +257,12 @@ export default class SmartArchiverPlugin extends Plugin {
     await this.ensureFolderExists(archiveFolder);
 
     const baseFileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
-    const archivePath = this.buildArchivePath(`${baseFileName} - completed-tasks`, archiveFolder);
+    const archivePath = this.buildArchivePath(`${baseFileName} - ${state}-tasks`, archiveFolder);
     const existing = this.app.vault.getAbstractFileByPath(archivePath);
 
     let archiveFile: TFile;
     if (existing instanceof TFile) {
-      await this.appendCompletedTasks(existing, extraction.completedTasks);
+      await this.appendTaskItems(existing, extraction.matchedTasks);
       archiveFile = existing;
     } else if (existing) {
       new Notice(`Cannot archive tasks: path exists and is not a file (${archivePath}).`);
@@ -250,13 +274,13 @@ export default class SmartArchiverPlugin extends Plugin {
     await this.setArchiveTime(archiveFile);
     await this.app.vault.modify(sourceFile, extraction.remainingContent);
 
-    new Notice(`Archived ${extraction.completedTasks.length} task(s): ${archiveFile.path} | Removed from source.`);
+    new Notice(`Archived ${extraction.matchedTasks.length} ${state} task(s): ${archiveFile.path} | Removed from source.`);
   }
 
-  private async appendCompletedTasks(file: TFile, completedTasks: string[]): Promise<void> {
+  private async appendTaskItems(file: TFile, taskItems: string[]): Promise<void> {
     const existingContent = await this.app.vault.read(file);
     const separator = existingContent.endsWith("\n") ? "" : "\n";
-    const appended = buildCompletedTaskAppendBlock(completedTasks);
+    const appended = buildTaskAppendBlock(taskItems);
     await this.app.vault.modify(file, `${existingContent}${separator}\n${appended}`);
   }
 
@@ -447,6 +471,8 @@ function renderTemplate(templateText: string, context: RenderContext): string {
     "{{status}}": context.frontmatter.status,
     "{{due}}": context.frontmatter.due,
     "{{tags}}": context.frontmatter.tags,
+    "{{task_items}}": context.taskItems,
+    "{{task_count}}": context.taskCount,
     "{{completed_tasks}}": context.completedTasks,
     "{{completed_tasks_count}}": context.completedTasksCount
   };
@@ -534,37 +560,45 @@ function normalizeTag(tag: string): string {
   return trimmed;
 }
 
-type CompletedTaskExtraction = {
-  completedTasks: string[];
+type TaskExtraction = {
+  matchedTasks: string[];
   remainingContent: string;
 };
 
-function extractCompletedTasks(content: string): CompletedTaskExtraction {
+function extractTasksByState(content: string, state: TaskState): TaskExtraction {
   const lines = content.split("\n");
-  const completedTasks: string[] = [];
+  const matchedTasks: string[] = [];
   const remainingLines: string[] = [];
+  const matcher = getTaskMatcher(state);
 
   for (const line of lines) {
-    if (isCompletedTaskLine(line)) {
-      completedTasks.push(line);
+    if (matcher(line)) {
+      matchedTasks.push(line);
       continue;
     }
     remainingLines.push(line);
   }
 
   return {
-    completedTasks,
+    matchedTasks,
     remainingContent: remainingLines.join("\n")
   };
 }
 
-function isCompletedTaskLine(line: string): boolean {
-  return /^\s*[-*]\s+\[[xX]\]\s+/.test(line);
+function getTaskMatcher(state: TaskState): (line: string) => boolean {
+  switch (state) {
+    case "completed":
+      return (line: string) => /^\s*[-*]\s+\[[xX]\]\s+/.test(line);
+    case "incomplete":
+      return (line: string) => /^\s*[-*]\s+\[\s\]\s+/.test(line);
+    case "cancelled":
+      return (line: string) => /^\s*[-*]\s+\[-\]\s+/.test(line);
+  }
 }
 
-function buildCompletedTaskAppendBlock(completedTasks: string[]): string {
+function buildTaskAppendBlock(taskItems: string[]): string {
   const timestamp = new Date().toISOString();
-  return `## Appended Tasks (${timestamp})\n\n${completedTasks.join("\n")}`;
+  return `## Appended Tasks (${timestamp})\n\n${taskItems.join("\n")}`;
 }
 
 function formatArchiveSuffix(pattern: string, now: Date): string {

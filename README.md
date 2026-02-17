@@ -7,6 +7,8 @@ Smart Archiver is an Obsidian plugin that archives GTD and project notes into fl
 - Archive the active note with a template picker command.
 - Archive active note, then auto-tag and move the source note.
 - Archive completed checklist items (`[x]`) from the active note.
+- Archive incomplete checklist items (`[ ]`) from the active note.
+- Archive cancelled checklist items (`[-]`) from the active note.
 - Use placeholder-based templates for consistent archive structure.
 - Configure archive destination and filename patterns.
 - Include or skip original note content in archive output.
@@ -38,6 +40,8 @@ To archive and then process the source note automatically, run:
 To archive only completed tasks from the active note, run:
 
 - **Archive completed tasks from active note**
+- **Archive incomplete tasks from active note**
+- **Archive cancelled tasks from active note**
 
 Behavior for completed-task archiving:
 
@@ -57,6 +61,8 @@ Behavior for completed-task archiving:
 - `{{status}}` - `status` value from source note frontmatter
 - `{{due}}` - `due` value from source note frontmatter
 - `{{tags}}` - merged frontmatter/inline tags from source note
+- `{{task_items}}` - extracted tasks for the current task-archive command
+- `{{task_count}}` - number of extracted tasks for the current task-archive command
 - `{{completed_tasks}}` - completed markdown tasks extracted from source note
 - `{{completed_tasks_count}}` - number of extracted completed tasks
 
