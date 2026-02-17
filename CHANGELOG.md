@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.2] - 2026-02-17
+
+### Fixed
+- Completed-task archive command now archives only extracted `[x]` task lines instead of full note content.
+- Archive creation now always sets `archive-time` frontmatter to current ISO datetime.
+
 ## [0.2.1] - 2026-02-17
 
 ### Added
