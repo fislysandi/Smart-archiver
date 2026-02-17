@@ -48,6 +48,7 @@ Behavior for completed-task archiving:
 - Archived `[x]` tasks are removed from the source note after a successful archive write.
 - If the target `*-completed-tasks.md` file already exists, new completed tasks are appended instead of creating a duplicate file.
 - Archive filenames include a configurable suffix (default: `dd.mm.yyyy`).
+- Date suffix auto-skips when the base filename already contains today's date to avoid duplicate dates.
 
 ## Template Placeholders
 

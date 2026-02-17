@@ -292,8 +292,10 @@ export default class SmartArchiverPlugin extends Plugin {
   }
 
   private buildArchivePath(baseFileName: string, archiveFolder: string): string {
-    const suffix = formatArchiveSuffix(this.settings.archiveSuffixPattern, new Date());
-    const fileName = suffix ? `${baseFileName} - ${suffix}` : baseFileName;
+    const now = new Date();
+    const suffix = formatArchiveSuffix(this.settings.archiveSuffixPattern, now);
+    const shouldAppendSuffix = suffix.length > 0 && !baseNameAlreadyContainsDate(baseFileName, now, suffix);
+    const fileName = shouldAppendSuffix ? `${baseFileName} - ${suffix}` : baseFileName;
     return normalizePath(`${archiveFolder}/${fileName}.md`);
   }
 
@@ -621,4 +623,14 @@ function formatArchiveSuffix(pattern: string, now: Date): string {
       return output.split(token).join(value);
     }, trimmed)
   );
+}
+
+function baseNameAlreadyContainsDate(baseFileName: string, now: Date, suffix: string): boolean {
+  const isoDate = now.toISOString().slice(0, 10);
+  const isoDateTime = now.toISOString().replace(/[:.]/g, "-");
+  const dateOnlySuffix = formatArchiveSuffix("dd.mm.yyyy", now);
+
+  return [suffix, isoDate, isoDateTime, dateOnlySuffix].some((candidate) => {
+    return candidate.length > 0 && baseFileName.includes(candidate);
+  });
 }
