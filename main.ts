@@ -14,6 +14,7 @@ interface SmartArchiverSettings {
   templateFolder: string;
   archiveFolder: string;
   archiveFileNamePattern: string;
+  archiveSuffixPattern: string;
   includeOriginalContent: boolean;
   processedSourceFolder: string;
   processedTag: string;
@@ -23,6 +24,7 @@ const DEFAULT_SETTINGS: SmartArchiverSettings = {
   templateFolder: "Templates/Archive",
   archiveFolder: "Archive",
   archiveFileNamePattern: "{{date}} - {{title}}",
+  archiveSuffixPattern: "dd.mm.yyyy",
   includeOriginalContent: true,
   processedSourceFolder: "Archive/Processed",
   processedTag: "archived"
@@ -169,7 +171,7 @@ export default class SmartArchiverPlugin extends Plugin {
     await this.ensureFolderExists(archiveFolder);
 
     const fileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
-    const archivePath = await this.nextAvailablePath(`${archiveFolder}/${fileName}.md`);
+    const archivePath = await this.nextAvailablePath(this.buildArchivePath(fileName, archiveFolder));
     const created = await this.app.vault.create(archivePath, archiveContent);
     await this.setArchiveTime(created);
 
@@ -231,7 +233,7 @@ export default class SmartArchiverPlugin extends Plugin {
     await this.ensureFolderExists(archiveFolder);
 
     const baseFileName = renderFileName(this.settings.archiveFileNamePattern, sourceFile);
-    const archivePath = normalizePath(`${archiveFolder}/${baseFileName} - completed-tasks.md`);
+    const archivePath = this.buildArchivePath(`${baseFileName} - completed-tasks`, archiveFolder);
     const existing = this.app.vault.getAbstractFileByPath(archivePath);
 
     let archiveFile: TFile;
@@ -263,6 +265,12 @@ export default class SmartArchiverPlugin extends Plugin {
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
       frontmatter["archive-time"] = archiveTime;
     });
+  }
+
+  private buildArchivePath(baseFileName: string, archiveFolder: string): string {
+    const suffix = formatArchiveSuffix(this.settings.archiveSuffixPattern, new Date());
+    const fileName = suffix ? `${baseFileName} - ${suffix}` : baseFileName;
+    return normalizePath(`${archiveFolder}/${fileName}.md`);
   }
 
   private async moveSourceNote(sourceFile: TFile): Promise<string> {
@@ -366,6 +374,19 @@ class SmartArchiverSettingsTab extends PluginSettingTab {
           .setValue(this.plugin.settings.archiveFileNamePattern)
           .onChange(async (value) => {
             this.plugin.settings.archiveFileNamePattern = value.trim() || DEFAULT_SETTINGS.archiveFileNamePattern;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Archive suffix pattern")
+      .setDesc("Date/time suffix appended to archive filenames. Tokens: dd, mm, yyyy, HH, MM, ss. Leave empty to disable.")
+      .addText((text) =>
+        text
+          .setPlaceholder("dd.mm.yyyy")
+          .setValue(this.plugin.settings.archiveSuffixPattern)
+          .onChange(async (value) => {
+            this.plugin.settings.archiveSuffixPattern = value.trim();
             await this.plugin.saveSettings();
           })
       );
@@ -544,4 +565,26 @@ function isCompletedTaskLine(line: string): boolean {
 function buildCompletedTaskAppendBlock(completedTasks: string[]): string {
   const timestamp = new Date().toISOString();
   return `## Appended Tasks (${timestamp})\n\n${completedTasks.join("\n")}`;
+}
+
+function formatArchiveSuffix(pattern: string, now: Date): string {
+  const trimmed = pattern.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const replacements: Record<string, string> = {
+    yyyy: String(now.getFullYear()),
+    dd: String(now.getDate()).padStart(2, "0"),
+    mm: String(now.getMonth() + 1).padStart(2, "0"),
+    HH: String(now.getHours()).padStart(2, "0"),
+    MM: String(now.getMinutes()).padStart(2, "0"),
+    ss: String(now.getSeconds()).padStart(2, "0")
+  };
+
+  return sanitizeFileName(
+    Object.entries(replacements).reduce((output, [token, value]) => {
+      return output.split(token).join(value);
+    }, trimmed)
+  );
 }
