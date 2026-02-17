@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.1] - 2026-02-17
+
+### Added
+- New command to archive completed tasks (`[x]`) from the active note.
+- New template placeholders: `{{completed_tasks}}` and `{{completed_tasks_count}}`.
+- New starter template: `templates/archive-completed-tasks.md`.
+
+### Changed
+- Added setting to optionally remove archived completed tasks from the source note.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added
